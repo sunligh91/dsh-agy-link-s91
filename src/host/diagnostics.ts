@@ -5,7 +5,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { stateDir } from '../common/config.ts'
-import type { PluginConfig } from '../common/types.ts'
+import { PKG_NAME, type PluginConfig } from '../common/types.ts'
 import type { ModelCatalog } from './models.ts'
 import type { SessionStore } from './sessions.ts'
 
@@ -33,7 +33,7 @@ export function writeDoctorReport(deps: DoctorDeps): string {
   const cat = deps.catalog().get()
   const bindings = deps.store().all()
   const lines: string[] = []
-  lines.push('# dsh-agy-link diagnostic report')
+  lines.push('# ' + PKG_NAME + ' diagnostic report')
   lines.push('')
   lines.push('- generated: ' + new Date().toISOString())
   lines.push('- agy binary: ' + (deps.bin() ?? 'NOT FOUND'))

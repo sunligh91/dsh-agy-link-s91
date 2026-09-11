@@ -2,7 +2,7 @@
 // on its first token; every handler answers with GUI-renderable markdown.
 import { isAbsolute } from 'node:path'
 import type { CommandDefinition, CommandResult } from '@deepseek-ai/dsh-commands'
-import type { PluginConfig } from '../common/types.ts'
+import { PKG_NAME, type PluginConfig } from '../common/types.ts'
 import type { AuthHelper } from './auth.ts'
 import type { ModelCatalog } from './models.ts'
 import type { SessionStore } from './sessions.ts'
@@ -211,7 +211,7 @@ async function renderStatus(deps: CommandDeps): Promise<string> {
   const bindings = Object.keys(deps.store().all()).length
   const last = deps.lastRun()
   const lines = [
-    '**dsh-agy-link status**',
+    '**' + PKG_NAME + ' status**',
     '- agy binary: ' + (bin ?? 'not found — install via https://antigravity.google/docs/cli/install'),
     '- version: ' + (deps.version() ?? 'unknown'),
     '- auth: ' + (auth ? auth.phase + (auth.message ? ' — ' + auth.message : '') : 'unknown'),

@@ -4,7 +4,20 @@
 
 export const PROVIDER_ID = 'antigravity'
 export const PLUGIN_ID = 'agy-link'
-export const PKG_NAME = 'dsh-agy-link'
+/**
+ * Package name — the SINGLE SOURCE OF TRUTH for the plugin's identity.
+ *
+ * DSH keys both host plugins and client modules by package name, so this
+ * value must agree with:
+ *   - package.json "name"
+ *   - cordis.patch.yml  -> insert[].name
+ *   - tsdown.config.ts  -> client bundle ModuleLoader id
+ *   - the host module id exported as `name` in src/index.ts
+ *
+ * Keep them in lockstep; a stale value here makes DSH import a package
+ * that does not exist (ERR_MODULE_NOT_FOUND on the whole plugin tree).
+ */
+export const PKG_NAME = 'dsh-agy-link-s91'
 
 export type PermissionMode = 'skip' | 'plan' | 'accept-edits'
 

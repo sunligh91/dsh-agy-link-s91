@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { dshHome, overridesPath, readOverrides, resolveConfig, stateDir } from './common/config.ts'
-import { PLUGIN_ID, PROVIDER_ID, type PluginConfig } from './common/types.ts'
+import { PKG_NAME, PLUGIN_ID, PROVIDER_ID, type PluginConfig } from './common/types.ts'
 import type { ManagedAccount } from './common/pool-types.ts'
 import { AgyAdapter } from './host/adapter.ts'
 import { defineAgyAskTool } from './host/ask-tool.ts'
@@ -28,7 +28,9 @@ import { defaultMediaDir, sweepDir, type ImageRefLike } from './host/media.ts'
 import { startMcpBridge, writeMcpConfig, type McpBridge, type ToolsServiceLike } from './host/mcp-bridge.ts'
 import { fileURLToPath } from 'node:url'
 
-export const name = 'dsh-agy-link'
+// DSH keys the host plugin by this module id; it must equal the package
+// name (see PKG_NAME). Deriving it avoids a second hardcoded copy.
+export const name = PKG_NAME
 // webServer and tools are optional: the plugin loads headless too.
 export const inject = ['llm', 'commands']
 
@@ -70,7 +72,7 @@ class Semaphore {
 }
 
 export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): void {
-  const tag = '[dsh-agy-link] '
+  const tag = '[' + PKG_NAME + '] '
   const log = (msg: string) => {
     const logger = (ctx as unknown as { logger?: { info?: (m: string) => void } }).logger
     logger?.info?.(tag + msg)
@@ -383,7 +385,7 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
         const cfg = getConfig()
         const cat = catalog.get()
         sendJson(res as RawRes, 200, {
-          plugin: 'dsh-agy-link',
+          plugin: PKG_NAME,
           bin: bin(),
           version: versionCache,
           dormantReason,

@@ -1,7 +1,15 @@
 # Changelog
 
-## 0.4.28 (2026-09-11) — Fork: dsh-agy-link-s91
+## 0.4.29 (2026-09-11)
 
+- **Fixed: plugin tree failed to load after the 0.4.28 rename (`ERR_MODULE_NOT_FOUND`).**
+  - **Root cause**: the fork renamed the package to `dsh-agy-link-s91` in `package.json` only, leaving two hardcoded copies of the old name behind. DSH keys both host plugins and client modules **by package name**, so the composition tried to import `dsh-agy-link` — a package that no longer existed — and the whole plugin tree failed to load.
+  - `cordis.patch.yml`: `insert[].name` was still `dsh-agy-link` (the server-side entry point).
+  - `tsdown.config.ts`: the client bundle's `window.__ModuleLoader__.load({ id })` banner was still `dsh-agy-link`, so the host's `require("dsh-agy-link-s91")` missed (client-side module key).
+  - **Fix**: `PKG_NAME` in `src/common/types.ts` is now the single source of truth for the plugin's identity; `src/index.ts` derives its exported module id from it, and the two remaining literal sites were updated to match. A comment block on `PKG_NAME` lists every place that must stay in lockstep, so a future rename cannot miss one again.
+- **Docs: corrected the install command in `cordis.patch.yml`** to the fork's git source.
+
+## 0.4.28 (2026-09-11) — Fork: dsh-agy-link-s91
 > Forked from [amlyczz/dsh-agy-link](https://github.com/amlyczz/dsh-agy-link) @ v0.4.27.
 > Carries local optimizations for Windows long-context workloads.
 
