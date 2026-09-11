@@ -271,6 +271,7 @@ export class AgyAdapter extends LlmAdapter {
     extraArgs: readonly string[]
     addDirs?: readonly string[]
     printTimeoutMinutes?: number
+    useStdinPrompt?: boolean
   }): string[] {
     const ptMins = opts.printTimeoutMinutes ?? Math.max(1, Math.ceil(opts.timeoutMs / 60_000))
     const args: string[] = ['--output-format', 'stream-json', '--print-timeout', ptMins + 'm']
@@ -283,7 +284,11 @@ export class AgyAdapter extends LlmAdapter {
     if (opts.conversationId) args.push('--conversation', opts.conversationId)
     for (const d of opts.addDirs ?? []) args.push('--add-dir', d)
     args.push(...opts.extraArgs)
-    args.push('-p', opts.prompt)
+    if (opts.useStdinPrompt) {
+      args.push('--input-format', 'stream-json')
+    } else {
+      args.push('-p', opts.prompt)
+    }
     return args
   }
 
@@ -550,6 +555,10 @@ export class AgyAdapter extends LlmAdapter {
     const parser = new StreamJsonParser()
     this.deps.onParser?.(parser)
     let streamCid: string | null = null
+    const stdinPayload = JSON.stringify({
+      event: 'user',
+      message: { content: prompt },
+    }) + '\n'
     const args = this.buildArgs({
       prompt,
       model: activeModel === '' ? cfg.defaultModel : activeModel,
@@ -560,6 +569,7 @@ export class AgyAdapter extends LlmAdapter {
       printTimeoutMinutes: Math.max(240, Math.ceil(cfg.timeoutMs / 60_000)),
       extraArgs: cfg.extraArgs,
       addDirs: stagedDirs,
+      useStdinPrompt: true,
     })
     const release = await this.deps.acquire()
     let released = false
@@ -616,6 +626,7 @@ export class AgyAdapter extends LlmAdapter {
       timeoutMs: cfg.timeoutMs,
       signal: options.signal,
       env,
+      stdinPayload,
       onLine: (line) => {
         for (const ev of parser.feed(line + '\n')) {
           if (ev.kind === 'init' && ev.conversationId) streamCid = ev.conversationId
@@ -630,6 +641,9 @@ export class AgyAdapter extends LlmAdapter {
       }
     } catch (e) {
       releaseOnce()
+      if (!isAux && sessionKey !== '') {
+        this.activeSessionPrompts.delete(sessionKey)
+      }
       throw new LlmError('failed to spawn agy: ' + brief(String(e)), Err.PROCESS_EXIT)
     }
 

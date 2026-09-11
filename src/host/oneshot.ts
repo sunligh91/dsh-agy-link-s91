@@ -117,7 +117,11 @@ export async function runAgyOnce(
     args.push(...sa.args)
     cleanup = sa.cleanup
   }
-  args.push('-p', prompt)
+  const stdinPayload = JSON.stringify({
+    event: 'user',
+    message: { content: prompt },
+  }) + '\n'
+  args.push('--input-format', 'stream-json')
   const parser = new StreamJsonParser()
   const textParts: string[] = []
   let resultText = ''
@@ -128,6 +132,7 @@ export async function runAgyOnce(
     cwd: cfg.workspaceRoot !== '' ? cfg.workspaceRoot : undefined,
     timeoutMs,
     signal: req.signal,
+    stdinPayload,
     onLine: (line) => {
       for (const ev of parser.feed(line + '\n')) {
         if (ev.kind === 'init' && ev.conversationId) conversationId = ev.conversationId

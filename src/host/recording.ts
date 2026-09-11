@@ -190,7 +190,9 @@ export function parseMirrorCallId(callId: string): { runId: string; eventIndex: 
   return { runId, eventIndex: n }
 }
 
-const MAX_RETAINED_RUNS = 8
+const DEFAULT_MAX_RETAINED_RUNS = 640
+const envMax = Number(process.env.DSH_AGY_MAX_RUNS)
+export const MAX_RETAINED_RUNS = Number.isSafeInteger(envMax) && envMax > 0 ? envMax : DEFAULT_MAX_RETAINED_RUNS
 
 /** Bounded registry keeping the most recent runs for continuation spans. */
 export class RunRegistry {

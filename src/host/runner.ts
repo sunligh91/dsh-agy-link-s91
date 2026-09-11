@@ -174,6 +174,8 @@ export interface RunOptions {
   onLine?: (line: string) => void;
   /** stdin stays writable (auth code injection). */
   keepStdin?: boolean;
+  /** Optional payload string written to stdin before closing it (e.g. stream-json prompt). */
+  stdinPayload?: string;
 }
 
 export interface RunningProcess {
@@ -235,7 +237,15 @@ export function startAgyProcess(opts: RunOptions): RunningProcess {
   // 1.1.15: `agy models` hangs forever with an open pipe stdin, which is
   // why model discovery silently timed out). Close stdin immediately for
   // every spawn that does not explicitly need to write to it.
-  if (!opts.keepStdin) {
+  if (opts.stdinPayload !== undefined) {
+    try {
+      child.stdin?.write(opts.stdinPayload, () => {
+        child.stdin?.end();
+      });
+    } catch {
+      // ignore
+    }
+  } else if (!opts.keepStdin) {
     try {
       child.stdin?.end();
     } catch {
