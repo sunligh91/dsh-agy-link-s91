@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.28 (2026-09-11) — Fork: dsh-agy-link-s91
+
+> Forked from [amlyczz/dsh-agy-link](https://github.com/amlyczz/dsh-agy-link) @ v0.4.27.
+> Carries local optimizations for Windows long-context workloads.
+
+- **Fixed: `spawn ENAMETOOLONG` on Windows with large context injection.**
+  - **Root cause**: the full prompt was passed as a command-line argument (`-p "<prompt>"`). Windows `CreateProcessW` caps the whole command line at **32,767 UTF-16 characters** (a hard NT kernel `UNICODE_STRING` limit that cannot be raised by registry or policy). Memory-injection plugins (e.g. `dsh-memory-palace` with a large `workspaceBudgetChars`) could easily push the assembled prompt past that ceiling, so `agy.exe` could never be spawned.
+  - **Fix**: the prompt is now written to **stdin** as an NDJSON stream message (`{"event":"user","message":{"content":...}}`) with `--input-format stream-json`. The command line shrinks to a few hundred characters regardless of prompt size, and prompt length is bounded only by memory. Verified end-to-end with a 100,000-character prompt.
+  - `RunOptions.stdinPayload` added in `src/host/runner.ts`; `buildArgs` learns `useStdinPrompt` in `src/host/adapter.ts`; `src/host/oneshot.ts` (the `agy_ask` one-shot path, which also carries large file context) converted to the same transport.
+  - Output protocol is unchanged — the stream is still `--output-format stream-json`, so the downstream parser and all tool mirroring keep working untouched.
+- **Fixed: retry after a failed spawn was swallowed as `Duplicate request ignored`.**
+  - When `startAgyProcess` threw (e.g. `ENAMETOOLONG`), the per-session entry in `activeSessionPrompts` was never released. The host's automatic retry ~2s later landed inside the 10s debounce window and was rejected with `Duplicate request ignored: an identical request is already running for this session`, masking the real error.
+  - The `catch` path now clears `activeSessionPrompts` for non-auxiliary calls before rethrowing.
+- **Changed: `MAX_RETAINED_RUNS` default raised from `8` to `640`.**
+  - The bounded `RunRegistry` kept only the most recent 8 runs, so in long agentic sessions (hundreds of `agy_tool` mirrored calls) earlier runs were evicted and a continuation span could fail with `no longer available`. The registry now retains 640 runs by default.
+  - New **`DSH_AGY_MAX_RUNS` environment variable** overrides the default (positive safe integers only) for users who need a different ceiling: `export DSH_AGY_MAX_RUNS=2000`.
+- **Inherited from upstream 0.4.27**: official Google installer path probing (`%LOCALAPPDATA%\agy\bin\agy.exe`) and Linux Secret Service quota support.
+
+
 ## 0.4.27 (2026-09-11)
 
 - **Fixed: Windows binary discovery misses the official Google installer path (Issue #7).**
