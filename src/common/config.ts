@@ -83,6 +83,10 @@ export function resolveConfig(
     defaultModel: asString(get('defaultModel')) ?? base.defaultModel,
     defaultEffort: asString(get('defaultEffort')) ?? base.defaultEffort,
     timeoutMs: asNum(get('timeoutMs')) ?? base.timeoutMs,
+    salvageAnswers: asBool(get('salvageAnswers')) ?? base.salvageAnswers,
+    salvagePollMs: asNum(get('salvagePollMs')) ?? base.salvagePollMs,
+    salvageIdleMs: asNum(get('salvageIdleMs')) ?? base.salvageIdleMs,
+    salvageMinChars: asNum(get('salvageMinChars')) ?? base.salvageMinChars,
     maxConcurrent: asNum(get('maxConcurrent')) ?? base.maxConcurrent,
     contextWindowDefault: asNum(get('contextWindowDefault')) ?? base.contextWindowDefault,
     maxTokensDefault: asNum(get('maxTokensDefault')) ?? base.maxTokensDefault,
@@ -127,6 +131,18 @@ export function resolveConfig(
   if (env.DSH_AGY_TIMEOUT_MS) {
     const t = asNum(env.DSH_AGY_TIMEOUT_MS)
     if (t && t > 0) cfg.timeoutMs = t
+  }
+  if (env.DSH_AGY_SALVAGE !== undefined) {
+    const s = asBool(env.DSH_AGY_SALVAGE)
+    if (s !== undefined) cfg.salvageAnswers = s
+  }
+  if (env.DSH_AGY_SALVAGE_POLL_MS) {
+    const p = asNum(env.DSH_AGY_SALVAGE_POLL_MS)
+    if (p && p >= 1_000) cfg.salvagePollMs = p
+  }
+  if (env.DSH_AGY_SALVAGE_IDLE_MS) {
+    const i = asNum(env.DSH_AGY_SALVAGE_IDLE_MS)
+    if (i && i >= 5_000) cfg.salvageIdleMs = i
   }
   if (env.DSH_AGY_EXTRA_ARGS) {
     cfg.extraArgs = env.DSH_AGY_EXTRA_ARGS.split(/\s+/).filter(Boolean)

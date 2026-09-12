@@ -16,7 +16,10 @@ import { defineAgyMirrorTool, parseMirrorInvocation } from '../src/host/mirror-t
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import { defaultConfig, Err, type PluginConfig } from '../src/common/types.ts'
 
-const fakeBin = join(import.meta.dirname, 'fake-agy.mjs')
+// Windows cannot spawn a .mjs directly (no file association, shebang ignored:
+// spawn fails with EFTYPE), so route through the .cmd shim there. POSIX keeps
+// executing the script directly, which is what its own shebang supports.
+const fakeBin = join(import.meta.dirname, process.platform === 'win32' ? 'fake-agy.cmd' : 'fake-agy.mjs')
 const workDir = mkdtempSync(join(tmpdir(), 'agy-adapter-'))
 process.env.DSH_AGY_CONVERSATIONS_DIR = join(workDir, 'convs')
 

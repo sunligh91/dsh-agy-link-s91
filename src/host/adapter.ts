@@ -17,6 +17,7 @@ import { defaultEffortFor, findEntry, ModelCatalog, resolveModelSlug } from './m
 import { StreamJsonParser } from './parser.ts'
 import { defaultMediaDir, stageImages, type ImageRefLike } from './media.ts'
 import { isolatedHomeEnv, startAgyProcess } from './runner.ts'
+import { lastStepIndex, readFinishedAnswer } from './salvage.ts'
 import { stateDir } from '../common/config.ts'
 import type { SessionStore } from './sessions.ts'
 
@@ -617,6 +618,22 @@ export class AgyAdapter extends LlmAdapter {
       this.lastAccountSpawnTime.set(account.id, Date.now())
     }
 
+    // ---- salvage baseline ----
+    // agy can finish a turn internally and persist the answer to its transcript
+    // while stdout stays silent (the response SSE stalls, typically at a quota
+    // boundary). The idle watchdog below would kill that run and throw away a
+    // perfectly good answer. Record where the transcript stood before this
+    // spawn so the watcher can tell a NEW answer from a leftover one.
+    const salvageEnabled = !isAux && cfg.salvageAnswers
+    const salvageDir = account != null && account.dir !== '' ? account.dir : undefined
+    // A returning session resumes an EXISTING conversation, so capture where
+    // its transcript stood before this spawn: only answers recorded after that
+    // point belong to this turn. A first contact has no binding and agy mints a
+    // fresh conversation, so everything in it is this run's (-1 = accept any).
+    const salvageBaseline = binding !== undefined ? lastStepIndex(binding.conversationId, salvageDir) : -1
+    const salvageCidOf = (): string =>
+      binding !== undefined ? binding.conversationId : (streamCid ?? '')
+
     let proc: ReturnType<typeof startAgyProcess>
     try {
       proc = startAgyProcess({
@@ -647,8 +664,55 @@ export class AgyAdapter extends LlmAdapter {
       throw new LlmError('failed to spawn agy: ' + brief(String(e)), Err.PROCESS_EXIT)
     }
 
+    // ---- salvage watcher ----
+    // While the run is alive, poll agy's own transcript. If agy finished the
+    // turn internally but the response stream stalled, adopt the persisted
+    // answer and end the run as a SUCCESS — the idle watchdog would otherwise
+    // kill it and report a TIMEOUT for work that actually completed.
+    let salvageTimer: NodeJS.Timeout | null = null
+    const stopSalvage = (): void => {
+      if (salvageTimer !== null) {
+        clearInterval(salvageTimer)
+        salvageTimer = null
+      }
+    }
+    if (salvageEnabled) {
+      salvageTimer = setInterval(() => {
+        if (proc.child.exitCode !== null) return
+        const cid = salvageCidOf()
+        if (cid === '') return
+        // Require a real silence window first: a run still streaming on stdout
+        // is already making progress and must never be pre-empted.
+        if (Date.now() - proc.lastActivityAt < cfg.salvageIdleMs) return
+        const ans = readFinishedAnswer(cid, salvageDir, cfg.salvageMinChars, salvageBaseline)
+        if (ans === null) return
+        stopSalvage()
+        if (this.deps.log !== undefined) {
+          this.deps.log(
+            'agy answer recovered from transcript at step ' + ans.step + ' after ' +
+            String(Date.now() - proc.lastActivityAt) + 'ms of stdout silence',
+          )
+        }
+        // Adopt it as this run's result envelope so the ordinary mapper path
+        // streams it as assistant text (plus a note explaining the recovery).
+        rec.append({
+          kind: 'result',
+          conversationId: cid,
+          ok: true,
+          response: ans.text,
+          usage: {},
+          raw: { salvaged: true, step: ans.step, createdAt: ans.createdAt },
+          salvagedFrom: ans.step,
+        })
+        proc.kill('salvage')
+      }, cfg.salvagePollMs)
+      // Never keep the host's event loop alive just for the watcher.
+      salvageTimer.unref?.()
+    }
+
     void (async () => {
       const outcome = await proc.outcome
+      stopSalvage()
       releaseOnce()
       if (this.activeRuns.get(sessionKey) === rec) this.activeRuns.delete(sessionKey)
       for (const ev of parser.flush()) {
@@ -672,8 +736,35 @@ export class AgyAdapter extends LlmAdapter {
       let failure: { kind: 'error' | 'aborted'; code: string; message: string } | null = null
       if (outcome.aborted) {
         failure = { kind: 'aborted', code: 'ABORTED', message: 'agy run aborted by caller' }
+      } else if (outcome.salvaged) {
+        // The salvage watcher already appended the recovered answer as this
+        // run's result envelope, so the ordinary mapper path finishes the span
+        // normally. Never report this as a failure.
+        failure = null
       } else if (outcome.timedOut) {
-        failure = { kind: 'error', code: Err.TIMEOUT, message: 'agy run was idle for ' + cfg.timeoutMs + 'ms without output' }
+        // Last chance: the watchdog can fire in the same tick as a completed
+        // answer, before the poller reads it. Check the transcript once more so
+        // a run that really did finish is not reported as a timeout.
+        const cid = streamCid ?? diffed
+        const late = cid !== null && cid !== '' && cfg.salvageAnswers
+          ? readFinishedAnswer(cid, salvageDir, cfg.salvageMinChars, salvageBaseline)
+          : null
+        if (late !== null) {
+          rec.append({
+            kind: 'result',
+            conversationId: cid as string,
+            ok: true,
+            response: late.text,
+            usage: {},
+            raw: { salvaged: true, step: late.step, createdAt: late.createdAt, late: true },
+            salvagedFrom: late.step,
+          })
+          if (this.deps.log !== undefined) {
+            this.deps.log('agy answer recovered from transcript after the idle watchdog fired (step ' + late.step + ')')
+          }
+        } else {
+          failure = { kind: 'error', code: Err.TIMEOUT, message: 'agy run was idle for ' + cfg.timeoutMs + 'ms without output' }
+        }
       } else if (sawAuthFailure(parser, outcome)) {
         failure = { kind: 'error', code: Err.AUTH, message: 'agy is not signed in — run /agy auth (or run agy once in a terminal) to login' }
       } else if (isRateLimit) {

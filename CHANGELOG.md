@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.4.30 (2026-09-13)
+
+- **Added: a full settings panel — every option is now editable in the GUI.**
+  - All settable options (the watchdog, answer salvage, model/effort, concurrency,
+    rate limiting, media, and the advanced fallbacks) render as controls in the
+    Antigravity settings card, each with its own explanation. Previously only
+    permission mode, effort and pool scheduling were exposed; the rest required
+    hand-editing `runtime-overrides.json`.
+  - **One source of truth**: the new `src/common/settings-schema.ts` declares each
+    option (key, kind, bounds, group, label, description, env var) once. The host
+    validates `/plugins/agy-link/config` writes against it and reports effective
+    values from it; the browser generates the controls from the same list. A new
+    option therefore needs no UI code, and the panel cannot offer a key the server
+    would reject or drift out of sync with it.
+  - Numbers commit on blur/Enter, not per keystroke, so a half-typed value never
+    reaches the server. Out-of-range or non-numeric input is rejected by the
+    endpoint with an actionable message instead of being stored.
+  - Millisecond options show a live human-readable hint (`600000` → `= 10 分钟`).
+  - Options already pinned in `runtime-overrides.json` are badged **已自定义**;
+    the `DSH_AGY_*` env var that overrides a setting is shown on its row. When an
+    env var outranks a save, the panel says so instead of pretending the write won.
+  - The card stays scannable by keeping the everyday controls visible
+    (`timeoutMs` and the `salvageAnswers` switch) while the fine-tuning numbers
+    (`salvagePollMs`, `salvageIdleMs`, `salvageMinChars`) and the rest of the
+    less common options sit behind a collapsible 「高级选项」 fold, which reports
+    how many options are inside it.
+- **Fixed: a completed answer was thrown away when agy stalled without writing
+  it to stdout.**
+  - **Symptom**: long turns died with `agy run was idle for 600000ms without output`
+    (code `TIMEOUT`, after `已重试模型请求 (1/1)`), yet re-prompting showed the model
+    had actually finished — its full answer was already on disk.
+  - **Root cause**: the activity watchdog only watches the child's stdout/stderr.
+    agy persists every completed turn to its own conversation transcript, so when
+    the response SSE stalls (observed at a quota boundary: the last log line is
+    `streamGenerateContent?alt=sse` and nothing follows) agy has the answer in
+    hand while stdout stays silent. After `timeoutMs` of silence the watchdog
+    killed the process and the finished work was discarded.
+    Measured on the affected run: the answer landed at `06:40:10`, the kill came
+    at `06:47:51` — **7m41s of usable answer sat on disk before it was lost**.
+  - **Fix**: a **salvage watcher** polls the conversation transcript while a run is
+    alive. When it finds a finished answer that (a) post-dates the spawn-time
+    baseline, (b) is a terminal `PLANNER_RESPONSE`/`DONE` record and (c) carries no
+    `tool_calls` (in 844 real records, 822 carry `tool_calls` and 22 carry content —
+    never both, so the presence of `tool_calls` reliably identifies a mid-turn
+    dispatch), the bridge adopts it as the run's result envelope and ends the turn
+    **as a success**. A last-chance check runs on the timeout path too, in case
+    the watchdog fires in the same tick as the answer landing.
+  - The recovered answer streams as ordinary assistant text, followed by an
+    explicit note (`[agy 已完成但未回传输出 · 答案从本地 transcript 恢复（step N）]`),
+    so a salvaged turn is never mistaken for one that streamed normally. The
+    event is also logged.
+  - New config: `salvageAnswers` (default `true`, env `DSH_AGY_SALVAGE`),
+    `salvagePollMs` (default `10000`, env `DSH_AGY_SALVAGE_POLL_MS`),
+    `salvageIdleMs` (default `45000`, env `DSH_AGY_SALVAGE_IDLE_MS`),
+    `salvageMinChars` (default `40`). A required silence window means a run still
+    streaming on stdout is never pre-empted. New env `DSH_AGY_CLI_HOME` locates the
+    agy data directory when it is not under the account home.
+  - Pool accounts are read from their own isolated home, so multi-account setups
+    salvage from the right transcript.
+- **Fixed: 15 adapter tests could not run on Windows.**
+  - `spawn` of the `.mjs` fixture failed with `EFTYPE`: Windows has no file
+    association for the extension and does not honour the shebang. Tests now use
+    a `fake-agy.cmd` shim on Windows (the same path a real `agy.cmd` install takes,
+    which `runner.ts` already detects via `isCmdShim`), while POSIX keeps executing
+    the script directly. Added a `stall` fake-agy mode to cover the salvage path.
+- **Tests**: added `test/salvage.test.ts` (11 cases: extraction rules, baseline
+  rejection, torn-line tolerance, home resolution) and `test/salvage-e2e.test.ts`
+  (2 cases: end-to-end recovery from a real stall, and an ordinary run staying
+  untouched). Suite goes from 130/152 to 160/167 passing; the 7 remaining failures
+  are pre-existing and unrelated (verified identical on the unmodified tree).
+
 ## 0.4.29 (2026-09-11)
 
 - **Fixed: plugin tree failed to load after the 0.4.28 rename (`ERR_MODULE_NOT_FOUND`).**

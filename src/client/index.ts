@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { AccountPoolData, FamilyQuotaInfo, ManagedAccount, ModelQuotaInfo } from '../common/pool-types.ts';
 import { BRAND_COLORS, BRAND_PATHS, UI_PATHS } from './brand-icons.ts';
+import { humanMs, planSettings, type SettingDef } from '../common/settings-schema.ts';
 
 type ReactApi = {
 	createElement: (type: unknown, props?: Record<string, unknown> | null, ...children: unknown[]) => unknown;
@@ -55,6 +56,10 @@ interface StatusPayload {
 	workspaceRoot?: string;
 	defaultModel?: string;
 	defaultEffort?: string;
+	/** Effective value of every settable option (defaults + overrides + env). */
+	settings?: Record<string, unknown>;
+	/** Raw override file contents, so the panel can mark keys the user pinned. */
+	overrides?: Record<string, unknown>;
 	auth?: {
 		phase: string;
 		accountId?: string;
@@ -786,6 +791,223 @@ const S: Record<string, Record<string, unknown>> = {
 	},
 };
 
+
+/** Shared inline spinner (used by the settings panel and the section). */
+const renderSpinner = (): unknown => h('span', { className: 'agy-spinner' });
+
+/**
+ * Schema-driven settings panel.
+ *
+ * Every control is generated from SETTINGS, the same list the host validates
+ * writes against, so the panel can never show an option the server rejects and
+ * a new option needs no UI code. Each row shows the label, the control, and the
+ * full explanation from the schema.
+ */
+const AgySettingsPanel = (props: {
+	settings: Record<string, unknown>;
+	overrides: Record<string, unknown>;
+	busyKey: string | null;
+	onCommit: (key: string, value: unknown) => void;
+}): unknown => {
+	const { settings, overrides, busyKey, onCommit } = props;
+	// Draft text for number/string inputs, keyed by option. Typing updates the
+	// draft only; the value is committed on blur or Enter so a half-typed number
+	// ("3" on the way to "30000") never reaches the server.
+	const [drafts, setDrafts] = useState<Record<string, string>>({});
+	const [showAdvanced, setShowAdvanced] = useState(false);
+
+	const effectiveOf = (def: SettingDef): unknown =>
+		settings[def.key] !== undefined ? settings[def.key] : (SETTINGS_DEFAULTS as Record<string, unknown>)[def.key];
+
+	const draftOf = (def: SettingDef): string => {
+		if (drafts[def.key] !== undefined) return drafts[def.key] as string;
+		const v = effectiveOf(def);
+		return v === undefined || v === null ? '' : String(v);
+	};
+
+	const isPinned = (def: SettingDef): boolean => {
+		// Either the override file holds it, or an env var outranks it.
+		if (overrides[def.key] !== undefined) return true;
+		return false;
+	};
+
+	const commitText = (def: SettingDef): void => {
+		const raw = drafts[def.key];
+		if (raw === undefined) return;
+		const current = effectiveOf(def);
+		const currentStr = current === undefined || current === null ? '' : String(current);
+		if (raw === currentStr) {
+			// Nothing changed: drop the draft so the field tracks live status.
+			const next = { ...drafts };
+			delete next[def.key];
+			setDrafts(next);
+			return;
+		}
+		let value: unknown = raw;
+		if (def.kind === 'number') {
+			const n = raw.trim() === '' ? NaN : Number(raw);
+			if (!Number.isFinite(n)) return; // keep the draft; the server would reject it
+			value = n;
+		}
+		onCommit(def.key, value);
+	};
+
+	const control = (def: SettingDef): unknown => {
+		const busy = busyKey === def.key;
+		if (def.kind === 'boolean') {
+			const on = effectiveOf(def) === true;
+			return h('div', { style: S.segGroup },
+				h('button', {
+					type: 'button',
+					style: on ? S.segBtnActive : S.segBtn,
+					disabled: busy,
+					onClick: () => onCommit(def.key, true),
+				}, '开启'),
+				h('button', {
+					type: 'button',
+					style: on ? S.segBtn : S.segBtnActive,
+					disabled: busy,
+					onClick: () => onCommit(def.key, false),
+				}, '关闭'),
+			);
+		}
+		if (def.kind === 'enum') {
+			const cur = String(effectiveOf(def) ?? '');
+			return h('div', { style: S.segGroup },
+				...(def.options ?? []).map((o) =>
+					h('button', {
+						type: 'button',
+						style: cur === o.value ? S.segBtnActive : S.segBtn,
+						disabled: busy,
+						onClick: () => onCommit(def.key, o.value),
+					}, o.label),
+				),
+			);
+		}
+		const raw = effectiveOf(def);
+		const hint = def.msScale && def.kind === 'number' && typeof raw === 'number' ? humanMs(raw) : '';
+		return h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flex: '1', maxWidth: '320px' } },
+			h('input', {
+				style: S.input,
+				type: def.kind === 'number' ? 'number' : 'text',
+				value: draftOf(def),
+				disabled: busy,
+				min: def.min,
+				max: def.max,
+				step: def.step,
+				placeholder: def.kind === 'number' && def.min !== undefined ? String(def.min) : '',
+				onChange: (e: { target: { value: string } }) => setDrafts({ ...drafts, [def.key]: e.target.value }),
+				onBlur: () => commitText(def),
+				onKeyDown: (e: { key?: string }) => { if (e.key === 'Enter') commitText(def) },
+			}),
+			def.unit ? h('span', { style: { ...S.muted, whiteSpace: 'nowrap' } }, def.unit) : null,
+			hint ? h('span', { style: { ...S.muted, whiteSpace: 'nowrap', color: 'var(--agy-seg-btn-active-bg)' } }, '= ' + hint) : null,
+			busy ? renderSpinner() : null,
+		);
+	};
+
+	const row = (def: SettingDef): unknown =>
+		h('div', {
+			key: def.key,
+			style: {
+				display: 'flex',
+				flexDirection: 'column',
+				gap: '5px',
+				padding: '9px 0',
+				borderBottom: '1px solid var(--agy-border-divider)',
+			},
+		},
+			h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' } },
+				h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' } },
+					h('span', { style: { color: 'var(--agy-text-primary)', fontWeight: 600, fontSize: '12.5px' } }, def.label),
+					isPinned(def)
+						? h('span', {
+								style: { ...S.badgeReady, fontSize: '10px', padding: '1px 6px' },
+								title: '已在运行时配置文件中自定义',
+							}, '已自定义')
+						: null,
+					def.env
+						? h('span', {
+								style: { ...S.muted, fontSize: '10px', fontFamily: 'monospace' },
+								title: '环境变量优先级高于此处设置',
+							}, def.env)
+						: null,
+				),
+				control(def),
+			),
+			h('div', { style: { ...S.muted, lineHeight: 1.6 } }, def.description),
+		);
+
+	// Placement comes from the schema, never from this renderer: an option that
+	// is both grouped and advanced must appear ONCE (in the fold), and an option
+	// must never be dropped because its group has no section here. See
+	// planSettings() for the invariant this replaced two independent filters with.
+	const { groups, fold } = planSettings();
+
+	return h('div', { style: { marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--agy-border-divider)' } },
+		...groups.map((g) =>
+			h('div', { key: g.id, style: { marginBottom: '10px' } },
+				h('div', {
+					style: {
+						color: 'var(--agy-text-primary)',
+						fontWeight: 700,
+						fontSize: '12px',
+						marginBottom: '2px',
+						letterSpacing: '0.02em',
+					},
+				}, g.title),
+				...g.items.map(row),
+			),
+		),
+		h('div', { style: { marginTop: '4px' } },
+			h('button', {
+				type: 'button',
+				className: 'agy-btn',
+				style: { ...S.btn, width: '100%' },
+				onClick: () => setShowAdvanced(!showAdvanced),
+			}, showAdvanced ? '收起高级选项 ▲' : ('展开高级选项 (' + fold.length + ') ▼')),
+			showAdvanced ? h('div', { style: { marginTop: '4px' } }, ...fold.map(row)) : null,
+		),
+	);
+};
+
+/**
+ * Fallback defaults for keys the status payload has not reported yet (older
+ * host build, or the very first render). Kept minimal on purpose: the host is
+ * the source of truth and reports every key once it answers.
+ */
+const SETTINGS_DEFAULTS: Record<string, unknown> = {
+	timeoutMs: 600000,
+	salvageAnswers: true,
+	salvagePollMs: 10000,
+	salvageIdleMs: 45000,
+	salvageMinChars: 40,
+	permissionMode: 'skip',
+	workspaceRoot: '',
+	defaultModel: '',
+	defaultEffort: '',
+	allowAuxiliary: true,
+	askTool: false,
+	autoFallbackModel: false,
+	rateLimitPerMinute: 0,
+	maxConcurrent: 3,
+	forwardSystemPrompt: false,
+	contextWindowDefault: 1048576,
+	maxTokensDefault: 65536,
+	digestMaxChars: 8000,
+	compactionMaxChars: 800000,
+	modelsCacheTtlMs: 300000,
+	logRetentionDays: 7,
+	quotaPollIntervalMs: 900000,
+	disableTelemetry: true,
+	mcpBridge: false,
+	mcpToolAllowlist: '',
+	agyBin: '',
+	mediaTtlMs: 86400000,
+	mediaMaxBytes: 10485760,
+	mediaMaxImages: 8,
+};
+
 export function apply(ctx: ClientContext): void {
 	const AgySettingsSection = (props?: any): unknown => {
 		const [status, setStatus] = useState<StatusPayload | null>(statusCache);
@@ -893,9 +1115,16 @@ export function apply(ctx: ClientContext): void {
 
 		const setCfg = async (key: string, value: unknown): Promise<void> => {
 			setLoadingAction(`config:${key}`);
-			await postJson('/plugins/agy-link/config', { key, value });
+			const res = await postJson('/plugins/agy-link/config', { key, value });
 			await refresh();
 			setLoadingAction(null);
+			// The endpoint validates against the shared schema; surface a rejection
+			// instead of leaving the panel showing a value the host refused.
+			if (res && res.ok === false) {
+				showToast(res.error || res.message || '设置保存失败', 'error');
+			} else if (res && res.pinnedByEnv === true) {
+				showToast('已保存，但该选项被同名环境变量覆盖，实际生效值以环境变量为准', 'warn');
+			}
 		};
 
 		const setPrimary = async (id: string): Promise<void> => {
@@ -957,7 +1186,7 @@ export function apply(ctx: ClientContext): void {
 		const isAuthed = authPhase === 'ok' || accounts.length > 0;
 		const isBusy = loadingAction !== null;
 
-		const renderSpinner = () => h('span', { className: 'agy-spinner' });
+		// Uses the module-level renderSpinner (shared with AgySettingsPanel).
 
 		const renderToastBanner = () => {
 			if (!toast) return null;
@@ -1369,52 +1598,13 @@ export function apply(ctx: ClientContext): void {
 			addAccountSection,
 			renderedAccountCards,
 			h('div', { style: { marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--agy-border-divider)' } },
+				// Only the pool scheduler is hardcoded here: it writes pool.mode via
+				// its own endpoint, not a PluginConfig key, so the schema cannot
+				// describe it. Permission mode and thinking effort USED to be
+				// duplicated here as hand-written segmented controls; they are now
+				// rendered from the schema like everything else, so keeping the
+				// copies would draw each of them twice.
 				h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
-					h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
-						h('span', { style: { color: 'var(--agy-text-primary)', fontWeight: 600, fontSize: '12.5px' } }, '权限模式:'),
-						h('div', { style: S.segGroup },
-							h('button', {
-								type: 'button',
-								style: status?.permissionMode === 'plan' ? S.segBtnActive : S.segBtn,
-								onClick: () => void setCfg('permissionMode', 'plan'),
-							}, 'plan (只读)'),
-							h('button', {
-								type: 'button',
-								style: status?.permissionMode === 'accept-edits' ? S.segBtnActive : S.segBtn,
-								onClick: () => void setCfg('permissionMode', 'accept-edits'),
-							}, 'accept-edits (改代码)'),
-							h('button', {
-								type: 'button',
-								style: status?.permissionMode === 'skip' ? { ...S.segBtnActive, color: 'var(--agy-seg-danger-text)', background: 'var(--agy-seg-danger-bg)', border: '1px solid var(--agy-seg-danger-border)' } : S.segBtn,
-								onClick: () => void setCfg('permissionMode', 'skip'),
-							}, 'skip (全自动免确认)'),
-						),
-					),
-					h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
-						h('span', { style: { color: 'var(--agy-text-primary)', fontWeight: 600, fontSize: '12.5px' } }, '思考强度:'),
-						h('div', { style: S.segGroup },
-							h('button', {
-								type: 'button',
-								style: status?.defaultEffort === '' ? S.segBtnActive : S.segBtn,
-								onClick: () => void setCfg('defaultEffort', ''),
-							}, 'auto'),
-							h('button', {
-								type: 'button',
-								style: status?.defaultEffort === 'low' ? S.segBtnActive : S.segBtn,
-								onClick: () => void setCfg('defaultEffort', 'low'),
-							}, 'low'),
-							h('button', {
-								type: 'button',
-								style: status?.defaultEffort === 'medium' ? S.segBtnActive : S.segBtn,
-								onClick: () => void setCfg('defaultEffort', 'medium'),
-							}, 'medium'),
-							h('button', {
-								type: 'button',
-								style: status?.defaultEffort === 'high' ? S.segBtnActive : S.segBtn,
-								onClick: () => void setCfg('defaultEffort', 'high'),
-							}, 'high'),
-						),
-					),
 					h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
 						h('span', { style: { color: 'var(--agy-text-primary)', fontWeight: 600, fontSize: '12.5px' } }, '号池调度:'),
 						h('div', { style: S.segGroup },
@@ -1432,6 +1622,17 @@ export function apply(ctx: ClientContext): void {
 					),
 				),
 			),
+			// Every remaining option, generated from the shared schema so the panel
+			// and the /config endpoint cannot drift apart. Each row carries its own
+			// explanation.
+			h(AgySettingsPanel, {
+				settings: status?.settings ?? {},
+				overrides: status?.overrides ?? {},
+				busyKey: typeof loadingAction === 'string' && loadingAction.startsWith('config:')
+					? loadingAction.slice('config:'.length)
+					: null,
+				onCommit: (key: string, value: unknown) => void setCfg(key, value),
+			}),
 		);
 	};
 

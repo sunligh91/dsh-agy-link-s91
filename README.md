@@ -131,6 +131,29 @@ dsh plugin --profile web add dsh-agy-link
 | `defaultModel` | `DSH_AGY_DEFAULT_MODEL` | `(agy 默认)` | 默认模型 slug |
 | `defaultEffort` | `DSH_AGY_DEFAULT_EFFORT` | `(模型默认)` | 思考预算：`low` / `medium` / `high` |
 | `timeoutMs` | `DSH_AGY_TIMEOUT_MS` | `600000` | 单轮活跃看门狗超时（毫秒） |
+| `salvageAnswers` | `DSH_AGY_SALVAGE` | `true` | agy 内部已完成但没写 stdout 时，从本地 transcript 恢复答案（避免误报超时） |
+| `salvagePollMs` | `DSH_AGY_SALVAGE_POLL_MS` | `10000` | 轮询 transcript 的间隔（毫秒） |
+| `salvageIdleMs` | `DSH_AGY_SALVAGE_IDLE_MS` | `45000` | 需静默多久才信任磁盘上的答案（防止抢断仍在输出的运行） |
+| `salvageMinChars` | — | `40` | 视为「完整答案」的最短长度 |
+| `allowAuxiliary` | — | `true` | 允许压缩/标题等辅助任务调用 agy |
+| `askTool` | — | `false` | 暴露 `agy_ask` 独立提问工具 |
+| `autoFallbackModel` | `DSH_AGY_AUTO_FALLBACK_MODEL` | `false` | 额度耗尽时自动降级模型 |
+| `rateLimitPerMinute` | `DSH_AGY_RATE_LIMIT_PER_MINUTE` | `0` | 全局限流（次/分，0 = 不限） |
+| `maxConcurrent` | — | `3` | 最大并发 agy 进程数 |
+| `forwardSystemPrompt` | — | `false` | 把 DSH 系统提示词转发给 agy |
+| `contextWindowDefault` | — | `1048576` | 上下文窗口兜底值（token） |
+| `maxTokensDefault` | — | `65536` | 最大输出兜底值（token） |
+| `digestMaxChars` | — | `8000` | 首次绑定时的历史摘要上限（字符） |
+| `compactionMaxChars` | — | `800000` | 历史压缩输入上限（字符） |
+| `modelsCacheTtlMs` | — | `300000` | 模型清单缓存时长（毫秒） |
+| `logRetentionDays` | `DSH_AGY_LOG_RETENTION_DAYS` | `7` | agy 日志保留天数 |
+| `quotaPollIntervalMs` | `DSH_AGY_QUOTA_POLL_INTERVAL_MS` | `900000` | 后台额度轮询间隔（毫秒） |
+| `disableTelemetry` | `DSH_AGY_DISABLE_TELEMETRY` | `true` | 向 agy 注入禁用遥测的环境变量 |
+| `mcpBridge` | `DSH_AGY_MCP_BRIDGE` | `false` | MCP 反向桥接（实验性） |
+| `mcpToolAllowlist` | `DSH_AGY_MCP_TOOL_ALLOWLIST` | `` | MCP 工具白名单（逗号分隔） |
+
+> 💡 以上所有选项都能在 **设置 → Antigravity** 卡片里直接调整，每个都带说明。
+> 配置文件只是底层存储；面板会把「已被环境变量覆盖」的项标出来。
 | `workspaceRoot` | `DSH_AGY_WORKSPACE_ROOT` | 会话 cwd | agy 工作区根目录（默认跟随当前会话工作区） |
 
 ---
@@ -267,6 +290,30 @@ dsh plugin --profile web add dsh-agy-link
 | `defaultModel` | `DSH_AGY_DEFAULT_MODEL` | `(agy default)` | Default model slug |
 | `defaultEffort` | `DSH_AGY_DEFAULT_EFFORT` | `(model default)` | Thinking budget: `low` / `medium` / `high` |
 | `timeoutMs` | `DSH_AGY_TIMEOUT_MS` | `600000` | Activity watchdog timeout in milliseconds |
+| `salvageAnswers` | `DSH_AGY_SALVAGE` | `true` | Recover the answer from agy's transcript when it finished internally but never wrote it to stdout (instead of reporting a timeout) |
+| `salvagePollMs` | `DSH_AGY_SALVAGE_POLL_MS` | `10000` | Transcript poll interval in milliseconds |
+| `salvageIdleMs` | `DSH_AGY_SALVAGE_IDLE_MS` | `45000` | stdout silence required before an on-disk answer is trusted |
+| `salvageMinChars` | — | `40` | Shortest transcript content accepted as a complete answer |
+| `allowAuxiliary` | — | `true` | Let compaction / session-title calls spawn agy |
+| `askTool` | — | `false` | Expose the standalone `agy_ask` tool |
+| `autoFallbackModel` | `DSH_AGY_AUTO_FALLBACK_MODEL` | `false` | Fall back to a lower-tier model when quota runs out |
+| `rateLimitPerMinute` | `DSH_AGY_RATE_LIMIT_PER_MINUTE` | `0` | Global request throttle (per minute, 0 = off) |
+| `maxConcurrent` | — | `3` | Max concurrent agy processes |
+| `forwardSystemPrompt` | — | `false` | Forward the DSH system prompt to agy |
+| `contextWindowDefault` | — | `1048576` | Fallback context window (tokens) |
+| `maxTokensDefault` | — | `65536` | Fallback max output (tokens) |
+| `digestMaxChars` | — | `8000` | History digest cap on first bind (characters) |
+| `compactionMaxChars` | — | `800000` | Compaction input cap (characters) |
+| `modelsCacheTtlMs` | — | `300000` | Model catalog cache TTL (ms) |
+| `logRetentionDays` | `DSH_AGY_LOG_RETENTION_DAYS` | `7` | agy log retention (days) |
+| `quotaPollIntervalMs` | `DSH_AGY_QUOTA_POLL_INTERVAL_MS` | `900000` | Background quota poll interval (ms) |
+| `disableTelemetry` | `DSH_AGY_DISABLE_TELEMETRY` | `true` | Inject telemetry-off env vars into agy |
+| `mcpBridge` | `DSH_AGY_MCP_BRIDGE` | `false` | MCP reverse bridge (experimental) |
+| `mcpToolAllowlist` | `DSH_AGY_MCP_TOOL_ALLOWLIST` | `` | MCP tool allowlist (comma-separated) |
+
+> 💡 Every option above is editable directly in **Settings → Antigravity**, each
+> with its own explanation. The config file is only the storage layer; the panel
+> flags any option that an environment variable is overriding.
 | `workspaceRoot` | `DSH_AGY_WORKSPACE_ROOT` | session cwd | Working directory root |
 
 ---

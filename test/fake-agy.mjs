@@ -64,7 +64,27 @@ if (mode === 'exit-error') {
 
 await sleep(Number(process.env.FAKE_AGY_DELAY_MS ?? 0))
 
-if (mode === 'auth') {
+// The stall shape observed on agy 1.2.x: the response SSE stops delivering
+// while agy is still alive, so stdout goes quiet with no result envelope. The
+// test writes the finished answer to the conversation transcript on the side,
+// which is where real agy persists it; the bridge must recover it from there
+// instead of waiting out the idle watchdog.
+//
+// This branch is CHAINED into the mode dispatcher below so control never falls
+// through to the legacy 'ok' shape.
+if (mode === 'stall') {
+  emit({ event: 'init', conversation_id: conv, init: { model: 'gemini-3-8-flash' } })
+  emit({ event: 'step_update', step_update: { conversation_id: conv, step_index: 0, state: 'DONE', step_type: 'user_input' } })
+  emit({ event: 'step_update', step_update: { conversation_id: conv, step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'working' } })
+  // Never emit a result and never exit: hang until killed. A never-resolving
+  // promise at top level would make Node exit with code 13 (unsettled
+  // top-level await), so keep the event loop busy with a timer instead.
+  setInterval(() => {}, 1 << 30)
+  // Stop here: falling through would emit the legacy 'ok' result and defeat
+  // the whole point of the mode. Awaiting a never-settling promise inside an
+  // IIFE keeps the process alive without tripping the unsettled-await warning.
+  await new Promise(() => {})
+} else if (mode === 'auth') {
   process.stderr.write('Please sign in. Visit https://accounts.google.com/o/oauth2/auth?access_type=offline&code=4/AbCdEf123 to authenticate, then paste the authorization code.\n')
   emit({ event: 'result', result: { conversation_id: '', status: 'ERROR', error: 'authentication failed or timed out' } })
   process.exit(0)

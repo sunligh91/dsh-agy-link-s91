@@ -39,6 +39,22 @@ export interface PluginConfig {
   defaultEffort: string
   /** Watchdog for one full agy -p run. */
   timeoutMs: number
+  /**
+   * Recover an answer agy finished internally but never wrote to stdout.
+   *
+   * agy persists every completed turn to its conversation transcript. When the
+   * response stream stalls (typically at a quota boundary) the idle watchdog
+   * kills the run and throws that answer away, so the user sees a TIMEOUT for
+   * work that actually completed. With salvage on, the bridge polls the
+   * transcript and adopts the answer instead.
+   */
+  salvageAnswers: boolean
+  /** How often the salvage watcher reads the transcript. */
+  salvagePollMs: number
+  /** stdout silence required before an on-disk answer is trusted. */
+  salvageIdleMs: number
+  /** Shortest transcript content accepted as a real answer. */
+  salvageMinChars: number
   maxConcurrent: number
   contextWindowDefault: number
   maxTokensDefault: number
@@ -100,6 +116,10 @@ export function defaultConfig(): PluginConfig {
     defaultModel: '',
     defaultEffort: '',
     timeoutMs: 600_000,
+    salvageAnswers: true,
+    salvagePollMs: 10_000,
+    salvageIdleMs: 45_000,
+    salvageMinChars: 40,
     maxConcurrent: 3,
     contextWindowDefault: 1_048_576,
     maxTokensDefault: 65_536,
@@ -192,6 +212,14 @@ export type AgyEvent =
       error?: string
       usage: RawUsage
       raw: unknown
+      /**
+       * Set when the response was recovered from agy's on-disk transcript
+       * instead of arriving on stdout (the response stream stalled but agy had
+       * already finished and persisted the answer). Carries the transcript
+       * step_index it was recovered from; the mapper surfaces it as a visible
+       * annotation so the user knows why the answer arrived this way.
+       */
+      salvagedFrom?: number
     }
   | { kind: 'garbage'; line: string }
 

@@ -372,3 +372,31 @@ test('usageFromRaw maps snake_case fields', () => {
   assert.equal(u.cacheReadTokens, 4)
   assert.equal(u.cacheWriteTokens, 5)
 })
+
+test('a salvaged result streams the answer with a visible recovery note', () => {
+  // agy finished internally but never wrote to stdout: the adapter adopts the
+  // on-disk answer as the result envelope. It must render like a normal answer
+  // (so the user gets the text) AND carry a note, otherwise a recovered turn is
+  // indistinguishable from one that streamed normally.
+  const m = newSpan()
+  const chunks = mapAll(m, [
+    { kind: 'result', conversationId: 'c1', ok: true, response: 'the recovered answer', usage: {}, salvagedFrom: 1712 },
+  ])
+  const types = chunks.map((c) => c.type)
+  assert.deepEqual(types, ['block-start', 'text-delta', 'block-end', 'block-start', 'reasoning-delta', 'block-end', 'usage', 'finish'])
+  const text = chunks.find((c) => c.type === 'text-delta') as Extract<StreamChunk, { type: 'text-delta' }>
+  assert.equal(text.text, 'the recovered answer')
+  const note = chunks.find((c) => c.type === 'reasoning-delta') as Extract<StreamChunk, { type: 'reasoning-delta' }>
+  assert.match(note.text, /transcript/)
+  assert.match(note.text, /1712/)
+  const finish = asFinish(lastChunk(chunks))
+  assert.equal(finish.reason.kind, 'stop')
+})
+
+test('an ordinary result carries no recovery note', () => {
+  const m = newSpan()
+  const chunks = mapAll(m, [
+    { kind: 'result', conversationId: 'c1', ok: true, response: 'normal answer', usage: {} },
+  ])
+  assert.equal(chunks.some((c) => c.type === 'reasoning-delta'), false)
+})

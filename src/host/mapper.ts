@@ -280,10 +280,27 @@ export class EventMapper {
       this.finished = true
       return
     }
-    if (!this.sawTextStep && ev.response !== '') {
+    // A salvaged result is the ONLY carrier of this turn's answer: whatever
+    // streamed before the stall was a partial fragment (agy emits text_delta
+    // as it goes), so it must not suppress the recovered text. For an ordinary
+    // result the guard still stands — the envelope repeats what already
+    // streamed and appending it would duplicate the answer.
+    const isSalvaged = ev.salvagedFrom !== undefined
+    if ((!this.sawTextStep || isSalvaged) && ev.response !== '') {
       yield* this.ensureBlock('text')
-      const d = this.appendDelta(ev.response)
+      const d = this.appendDelta((isSalvaged && this.sawTextStep ? '\n\n' : '') + ev.response)
       if (d) yield d
+    }
+    if (isSalvaged) {
+      // The answer never reached stdout: agy finished internally, persisted it
+      // to its own transcript, and left the response stream silent. Say so
+      // explicitly, otherwise a recovered answer looks like an ordinary one
+      // and the user cannot tell that the visible turn had stalled.
+      yield* this.ensureBlock('reasoning')
+      const note = this.appendDelta(
+        '[agy 已完成但未回传输出 · 答案从本地 transcript 恢复（step ' + ev.salvagedFrom + '）]\n',
+      )
+      if (note) yield note
     }
     const close = this.closeOpen()
     if (close) yield close

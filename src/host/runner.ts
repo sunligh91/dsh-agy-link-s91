@@ -159,9 +159,13 @@ export interface RunOutcome {
   signal: NodeJS.Signals | null;
   timedOut: boolean;
   aborted: boolean;
+  /** Killed by the adapter after it recovered the answer off agy's transcript. */
+  salvaged: boolean;
   stdout: string;
   stderrTail: string;
   durationMs: number;
+  /** Epoch ms of the last stdout/stderr byte (spawn time when none arrived). */
+  lastActivityAt: number;
 }
 
 export interface RunOptions {
@@ -181,7 +185,13 @@ export interface RunOptions {
 export interface RunningProcess {
   child: ChildProcess;
   outcome: Promise<RunOutcome>;
-  kill(reason: 'timeout' | 'abort'): void;
+  kill(reason: 'timeout' | 'abort' | 'salvage'): void;
+  /**
+   * Epoch ms of the last stdout/stderr byte. The salvage watcher uses this to
+   * require a real silence window before trusting an on-disk answer, so it can
+   * never pre-empt a run that is still streaming.
+   */
+  readonly lastActivityAt: number;
 }
 
 const GRACE_MS = 5000;
@@ -231,7 +241,9 @@ export function startAgyProcess(opts: RunOptions): RunningProcess {
   let stderr = '';
   let timedOut = false;
   let aborted = false;
+  let salvaged = false;
   let settled = false;
+  let lastActivityAt = started;
 
   // agy reads stdin when it is a pipe and never sees EOF (observed on
   // 1.1.15: `agy models` hangs forever with an open pipe stdin, which is
@@ -274,6 +286,7 @@ export function startAgyProcess(opts: RunOptions): RunningProcess {
   if (child.stderr) child.stderr.setEncoding('utf8');
   let pending = '';
   child.stdout?.on('data', (chunk: string) => {
+    lastActivityAt = Date.now();
     refreshWatchdog();
     stdout += chunk;
     if (stdout.length > 4_000_000) stdout = stdout.slice(-2_000_000);
@@ -286,6 +299,7 @@ export function startAgyProcess(opts: RunOptions): RunningProcess {
     }
   });
   child.stderr?.on('data', (chunk: string) => {
+    lastActivityAt = Date.now();
     refreshWatchdog();
     stderr = (stderr + chunk).slice(-4096);
   });
@@ -305,9 +319,11 @@ export function startAgyProcess(opts: RunOptions): RunningProcess {
         signal,
         timedOut,
         aborted,
+        salvaged,
         stdout,
         stderrTail: stderr,
         durationMs: Date.now() - started,
+        lastActivityAt,
       });
     };
     child.on('exit', (code, signal) => finish(code, signal));
@@ -320,8 +336,15 @@ export function startAgyProcess(opts: RunOptions): RunningProcess {
   return {
     child,
     outcome,
+    get lastActivityAt(): number {
+      return lastActivityAt;
+    },
     kill: (reason) => {
+      // 'salvage' is a SUCCESSFUL end: the adapter already recovered the
+      // answer off agy's transcript and only kills the stalled process to
+      // free its slot. It must not be reported as a timeout or an abort.
       if (reason === 'timeout') timedOut = true;
+      else if (reason === 'salvage') salvaged = true;
       else aborted = true;
       if (watchdog) clearTimeout(watchdog);
       killTree(child);

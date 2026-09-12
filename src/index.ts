@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { dshHome, overridesPath, readOverrides, resolveConfig, stateDir } from './common/config.ts'
+import { coerceSetting, settingByKey, SETTINGS } from './common/settings-schema.ts'
 import { PKG_NAME, PLUGIN_ID, PROVIDER_ID, type PluginConfig } from './common/types.ts'
 import type { ManagedAccount } from './common/pool-types.ts'
 import { AgyAdapter } from './host/adapter.ts'
@@ -395,6 +396,14 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
           defaultModel: cfg.defaultModel,
           defaultEffort: cfg.defaultEffort,
           askTool: cfg.askTool,
+          // Effective settings for the panel. Values come from the resolved
+          // config (defaults + override file + env), so what the panel shows is
+          // what the bridge is really using. The override file is reported
+          // separately so the UI can flag "pinned by env, edit ignored".
+          settings: Object.fromEntries(
+            SETTINGS.map((s) => [s.key, (cfg as unknown as Record<string, unknown>)[s.key]]),
+          ),
+          overrides: readOverrides(),
           auth: auth.status(),
           poolAuth: poolAuth.status(),
           pool: pool.getPoolData(),
@@ -643,15 +652,29 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
         }
         const body = await readBody(req)
         const key = typeof body.key === 'string' ? body.key : ''
-        const allowed = ['permissionMode', 'defaultModel', 'defaultEffort', 'askTool', 'workspaceRoot']
-        if (!allowed.includes(key)) {
-          sendJson(res as RawRes, 400, { error: 'key not settable' })
+        // Validation and coercion come from the shared schema, so the panel and
+        // the endpoint can never disagree about which keys exist or what shape
+        // their values take.
+        const def = settingByKey(key)
+        if (def === undefined) {
+          sendJson(res as RawRes, 400, { error: 'key not settable: ' + key })
           return
         }
-        setOverride(key, body.value)
+        const coerced = coerceSetting(def, body.value)
+        if (!coerced.ok) {
+          sendJson(res as RawRes, 400, { error: coerced.error })
+          return
+        }
+        setOverride(def.key, coerced.value)
         syncAskTool()
         syncMirrorTool()
-        sendJson(res as RawRes, 200, { ok: true, key, value: body.value })
+        // Report back the value that will actually be used: an env var for this
+        // key outranks the override file, and silently showing the stored value
+        // would make the panel lie about what the bridge is doing.
+        const effective = (getConfig() as unknown as Record<string, unknown>)[def.key]
+        const pinnedByEnv =
+          def.env !== undefined && process.env[def.env] !== undefined && process.env[def.env] !== ''
+        sendJson(res as RawRes, 200, { ok: true, key: def.key, value: effective, pinnedByEnv })
       })()
     }})
     reg({ kind: 'exact', path: '/plugins/agy-link/qr', handler: (_req, res) => {
