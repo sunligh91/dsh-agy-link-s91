@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.31 (2026-09-21)
+
+- **Fixed: the quota panel showed a permanent 100% for every model family.**
+  - **Symptom**: the Antigravity card reported Gemini, Claude and GPT-OSS at 100%
+    with an unchanging reset date, while `agy --print "/quota"` reported Gemini's
+    weekly limit at 90% and its 5-hour limit at 55%. Pressing **刷新额度** never
+    changed anything.
+  - **Root cause**: a field-casing mismatch. `v1internal:retrieveUserQuotaSummary`
+    returns **snake_case** — buckets carry `remaining_fraction` / `reset_time` and
+    groups carry `name` — but the parser read camelCase `remainingFraction` /
+    `resetTime` and `group.displayName`. Every bucket therefore resolved to
+    `undefined`, the group never matched a family, and the client's `?? 1`
+    fallback rendered the missing values as a confident 100%.
+  - **Fix**: both spellings are now accepted and normalized at read time —
+    `b.remainingFraction ?? b.remaining_fraction`, `b.resetTime ?? b.reset_time`,
+    `group.displayName || group.name` (and `entry.quotaInfo.*` for the per-model
+    list). The bucket-window test also accepts `id` alongside `bucketId`, and the
+    response types document both shapes.
+  - A casing change on Google's side can no longer silently blank the panel: an
+    unparsed bucket stays `undefined` rather than masquerading as a full tank.
+    (Making the UI distinguish "unknown" from 100% is left as a follow-up.)
+- **Tests**: the old mocks returned camelCase — i.e. they encoded the same wrong
+  assumption as the code, which is why the suite stayed green through this bug.
+  Both mocks now use the **real wire shape** captured live from agy 1.2.4, and a new
+  regression test (`refreshAccountQuota normalizes snake_case AND camelCase quota
+  buckets`) asserts 6 values against each shape. Verified to fail on the unfixed
+  parser (`expected: 0.55`) and pass after the fix.
+- Suite: 176/183 passing. The 7 remaining failures are **pre-existing and unrelated**
+  (follow-up digest, compaction prompt/ADR-013, adapter cwd ×2, multimodal staging);
+  verified identical on the unmodified tree via `git stash`. Net effect of this
+  release: one added test, zero new failures.
+
 ## 0.4.30 (2026-09-13)
 
 - **Added: a full settings panel — every option is now editable in the GUI.**
