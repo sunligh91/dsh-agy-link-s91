@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.4.32 (2026-09-24)
+
+- **Fixed: every tool-continuation span failed with `request carries no user text
+  or images to forward to agy`, and the digest could absorb command output.**
+  - **Symptom**: after agy emitted a mirrored tool card, the next span died with
+    that error even though the tool result had come back.
+  - **Root cause**: DSH **session format v4** (dsh >= 0.1.7) promotes tool results
+    to their own first-class `tool` role — `ToolResultMessage.role = 'tool'`,
+    `MessageRoleMap.tool`, `SESSION_FORMAT_VERSION = 4`. v3 modelled them as
+    `user` messages carrying a `tool-result` block. `detectContinuation` still
+    required `role === 'user'`, so it never matched: the adapter fell through to
+    prompt assembly, the tool result was filtered out of the trailing-user run,
+    and the prompt came out empty → the error above.
+  - **Second, quieter defect**: v4 tool results carry plain `text` blocks, so v3's
+    incidental protection (a `tool-result` block is not `text`, hence `textOf`
+    returned `''`) disappeared. Command output would have been digested as
+    `Assistant: <stdout>` and handed to agy as if the model had said it.
+  - **Fix**: target v4 only.
+    - `detectContinuation` now accepts `role === 'tool'` (v3 `user` tool results are
+      deliberately rejected).
+    - `buildDigest` skips `tool` and `developer` messages, so tool output and
+      session metadata never enter the digest.
+    - Both checks read the message structurally, keeping the adapter correct
+      regardless of which `dsh-llm` the type-checker resolves (the host supplies
+      the real module through `peerDependencies`).
+- **Tests**: the shared continuation fixture and the `detectContinuation` unit test
+  were still building v3-shaped messages (`role: 'user'` + `tool-result`), which is
+  why they only failed once the adapter became v4-only; both now build the v4
+  shape, with an explicit assertion that a v3-shaped tool result is rejected. Added
+  a digest regression test covering `tool` and `developer` exclusion.
+- Suite: **184 tests, 177 passing**. The 7 failures are pre-existing and unrelated
+  (follow-up digest, compaction prompt/ADR-013, adapter cwd ×2, multimodal staging);
+  identical to the baseline recorded for 0.4.31 — no new failures.
+
 ## 0.4.31 (2026-09-21)
 
 - **Fixed: the quota panel showed a permanent 100% for every model family.**

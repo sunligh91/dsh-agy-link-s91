@@ -116,9 +116,12 @@ async function runTurn(
     }
     toolCalls.push({ id: end.block.id, args })
     messages.push({ role: 'assistant', content: [end.block] } as unknown as Message)
+    // DSH session format v4: the tool result is its own `tool`-role message
+    // carrying plain text (v3 used a `user` message with a tool-result block).
     messages.push({
-      role: 'user',
-      content: [{ type: 'tool-result', toolCallId: end.block.id, content: [{ type: 'text', text: 'replayed' }] }],
+      role: 'tool',
+      toolCallId: end.block.id,
+      content: [{ type: 'text', text: 'replayed' }],
       source: { kind: 'tool', callId: end.block.id },
     } as unknown as Message)
   }
@@ -161,15 +164,22 @@ test('ok run mirrors tools natively, streams text, and persists the binding', as
   assert.equal(b.lastMessageCount, 1)
 })
 
-test('detectContinuation keys off the trailing mirror tool-result only', () => {
-  const toolResult = (callId: string): Message =>
-    ({ role: 'user', content: [{ type: 'tool-result', toolCallId: callId, content: [] }], source: { kind: 'tool', callId } }) as never
+test('detectContinuation keys off the trailing mirror tool-result only (v4 tool role)', () => {
+  // DSH session format v4 gives tool results their own `tool` role with plain
+  // text content; v3 carried them as `user` with a tool-result block. This
+  // adapter targets v4 only.
+  const v4ToolResult = (callId: string): Message =>
+    ({ role: 'tool', toolCallId: callId, content: [{ type: 'text', text: 'replayed' }], source: { kind: 'tool', callId } }) as never
   assert.deepEqual(
-    detectContinuation([msg('user', 'q'), toolResult('agytc-run-1-7')]),
+    detectContinuation([msg('user', 'q'), v4ToolResult('agytc-run-1-7')]),
     { runId: 'run-1', eventIndex: 7 },
   )
   assert.equal(detectContinuation([msg('user', 'q')]), null)
-  assert.equal(detectContinuation([msg('user', 'q'), toolResult('bash-9')]), null)
+  assert.equal(detectContinuation([msg('user', 'q'), v4ToolResult('bash-9')]), null)
+  // A v3-style user-role tool result is no longer accepted (v4-only).
+  const v3ToolResult = (callId: string): Message =>
+    ({ role: 'user', content: [{ type: 'tool-result', toolCallId: callId, content: [] }], source: { kind: 'tool', callId } }) as never
+  assert.equal(detectContinuation([msg('user', 'q'), v3ToolResult('agytc-run-1-7')]), null)
 })
 
 test('second turn reuses the bound conversation id', async () => {
@@ -385,6 +395,28 @@ test('buildDigest bounds output and keeps newest turns', () => {
   const full = buildDigest(msgs, 0, 10_000)
   assert.ok(full.includes('turn-one'))
   assert.ok(full.includes('turn-three'))
+})
+
+test('buildDigest excludes v4 tool-role output and developer messages', () => {
+  // v4 gives tool results a first-class `tool` role whose blocks are plain
+  // text, so without an explicit skip their command output would be digested
+  // as "Assistant: <stdout>" and poison the context sent to agy.
+  const toolOut = (text: string): Message =>
+    ({ role: 'tool', toolCallId: 'agytc-run-1-7', content: [{ type: 'text', text }], source: { kind: 'tool', callId: 'agytc-run-1-7' } }) as never
+  const developer = (text: string): Message => ({ role: 'developer', content: [{ type: 'text', text }] }) as never
+
+  const msgs = [
+    msg('user', 'real question'),
+    toolOut('[PASS] 3 tests\n[PASS] 5 tests'),
+    developer('session metadata'),
+    msg('assistant', 'real answer'),
+  ]
+  const d = buildDigest(msgs, 0, 10_000)
+  assert.ok(d.includes('real question'), 'user text is digested')
+  assert.ok(d.includes('real answer'), 'assistant text is digested')
+  assert.ok(!d.includes('[PASS]'), 'tool-role stdout must not enter the digest')
+  assert.ok(!d.includes('session metadata'), 'developer messages must not enter the digest')
+  assert.ok(!d.includes('Assistant: [PASS]'), 'tool output must never be labelled as assistant text')
 })
 
 function msgSrc(role: 'user' | 'assistant', text: string, provider?: string): Message {

@@ -37,16 +37,26 @@ function isForeignAssistant(m: Message): boolean {
   return !src || src.provider !== PROVIDER_ID
 }
 
-/** Rolling digest of turns this agy conversation has not seen (ADR-7). */
+/**
+ * Rolling digest of turns this agy conversation has not seen (ADR-7).
+ *
+ * DSH session format **v4** (dsh >= 0.1.7) gives tool results a first-class
+ * `tool` role whose content blocks are plain `text`. Digesting those would
+ * label command output as "Assistant:" and poison the context handed to agy,
+ * so tool results — and the v4 session-metadata `developer` role — are skipped
+ * here exactly as v3's `tool-result` blocks were skipped by `textOf`.
+ */
 export function buildDigest(messages: readonly Message[], fromIdx: number, maxChars: number): string {
   const parts: string[] = []
   let budget = maxChars
   for (let i = messages.length - 1; i >= fromIdx; i--) {
     const m = messages[i]
-    if (m === undefined || m.role === 'system') continue
+    if (m === undefined) continue
+    const role = String((m as { role?: unknown }).role)
+    if (role === 'system' || role === 'developer' || role === 'tool') continue
     const text = textOf(m)
     if (text === '') continue
-    const line = (m.role === 'user' ? 'User: ' : 'Assistant: ') + text
+    const line = (role === 'user' ? 'User: ' : 'Assistant: ') + text
     if (line.length > budget) {
       parts.unshift(line.slice(0, Math.max(0, budget)))
       break
@@ -886,11 +896,19 @@ export class AgyAdapter extends LlmAdapter {
  * Detect a continuation span: the request's LAST message is the tool result
  * of one of our mirrored agy tool calls. Its callId encodes the recording
  * run and the event index to resume after.
+ *
+ * DSH session format **v4** (dsh >= 0.1.7) gives tool results their own
+ * `tool` role; v3 carried them as `user`. This adapter targets v4 only, so
+ * `tool` is the sole accepted role here. The message is read structurally so
+ * the check stays valid regardless of which dsh-llm the type-checker sees
+ * (the host provides the real module at runtime via peerDependencies).
  */
 export function detectContinuation(messages: readonly Message[]): { runId: string; eventIndex: number } | null {
-  const last = messages[messages.length - 1]
-  if (last === undefined || last.role !== 'user') return null
-  const src = (last as unknown as { source?: { kind?: string; callId?: string } }).source
+  const last = messages[messages.length - 1] as unknown as
+    | { role?: string; source?: { kind?: string; callId?: string } }
+    | undefined
+  if (last === undefined || last.role !== 'tool') return null
+  const src = last.source
   if (src === undefined || src.kind !== 'tool' || typeof src.callId !== 'string') return null
   return parseMirrorCallId(src.callId)
 }
